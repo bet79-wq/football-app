@@ -5,7 +5,8 @@ import pandas as pd
 import os
 
 # 🔐 ADD YOUR API KEY HERE
-API_KEY = "ef07da036042ddf4dfb8cebaa0cab6f1"
+import os
+API_KEY = os.getenv("API_KEY")
 
 headers = {
     "x-apisports-key": API_KEY
