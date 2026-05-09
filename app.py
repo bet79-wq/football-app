@@ -39,7 +39,6 @@ st.caption(
     "Scans live football matches, detects second-half goal value and sends Telegram alerts automatically."
 )
 
-# Auto refresh every 2 minutes
 st.markdown(
     """
     <meta http-equiv="refresh" content="120">
@@ -297,7 +296,7 @@ else:
     st.warning("No second-half opportunities currently qualify")
 
 # =========================================
-# SIMPLE BACKTESTING
+# SIMPLE BACKTESTING WITH API DEBUG
 # =========================================
 
 st.header("📈 Historical Second Half Backtesting")
@@ -335,10 +334,22 @@ if st.button("Run Backtest"):
         f"status=FT"
     )
 
-    matches = requests.get(
+    raw_response = requests.get(
         historical_url,
         headers=headers
-    ).json().get("response", [])
+    ).json()
+
+    st.write("API errors:", raw_response.get("errors"))
+    st.write("API results count:", raw_response.get("results"))
+
+    matches = raw_response.get("response", [])
+
+    st.write(f"Matches returned from API: {len(matches)}")
+
+    if len(matches) == 0:
+        st.warning(
+            "The API returned 0 matches. Try Season 2024 or 2025, or your API plan may not include this historical season."
+        )
 
     total_bets = 0
     wins = 0
@@ -358,9 +369,6 @@ if st.button("Run Backtest"):
 
             total_goals = home_goals + away_goals
 
-            # Simple test condition:
-            # If total goals are 2 or more, we simulate that the match
-            # had enough goal environment to qualify for a second-half goal angle.
             qualifies = total_goals >= 2
 
             if qualifies:
@@ -369,9 +377,6 @@ if st.button("Run Backtest"):
                 stake = 1
                 odds = 1.70
 
-                # Proxy outcome:
-                # If full match had 3+ goals, assume second-half goal angle wins.
-                # This is a rough starter backtest, not final proof.
                 if total_goals >= 3:
                     profit = stake * (odds - 1)
                     wins += 1
