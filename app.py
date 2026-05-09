@@ -36,9 +36,10 @@ st.set_page_config(
 st.title("⚽ Automated Second Half Goal Scanner")
 
 st.caption(
-    "Scans live football matches, detects second-half goal value and sends Telegram alerts automatically."
+    "Live second-half goal alerts + CSV historical backtesting."
 )
 
+# Auto refresh every 2 minutes
 st.markdown(
     """
     <meta http-equiv="refresh" content="120">
@@ -218,6 +219,7 @@ def calculate_second_half_model(match):
 
     prob_goal = probability_over_0_5(second_half_xg)
 
+    # NOTE: This is simulated odds until you connect real live odds.
     market_odds = (1 / prob_goal) * 1.05
     implied = 1 / market_odds
     edge = prob_goal - implied
@@ -296,121 +298,144 @@ else:
     st.warning("No second-half opportunities currently qualify")
 
 # =========================================
-# SIMPLE BACKTESTING WITH API DEBUG
+# CSV BACKTESTING
 # =========================================
 
-st.header("📈 Historical Second Half Backtesting")
+st.header("📈 CSV Historical Backtesting")
 
 st.write(
-    "This simplified backtest checks whether historical goal-heavy games would have produced second-half goal wins. "
-    "It is not using real historical live odds yet."
+    "This backtest uses CSV files from football-data.co.uk instead of API-Football."
 )
 
-league_id = st.number_input(
-    "League ID",
-    value=39
-)
+csv_files = [
+    file for file in os.listdir()
+    if file.endswith(".csv") and file != ALERTS_FILE
+]
 
-season = st.number_input(
-    "Season",
-    value=2023
-)
+if csv_files:
 
-max_matches = st.number_input(
-    "Max matches",
-    value=200,
-    min_value=20,
-    max_value=1000
-)
-
-if st.button("Run Backtest"):
-
-    st.write("Running backtest...")
-
-    historical_url = (
-        f"https://v3.football.api-sports.io/fixtures?"
-        f"league={league_id}&"
-        f"season={season}&"
-        f"status=FT"
+    selected_csv = st.selectbox(
+        "Choose CSV file",
+        csv_files
     )
 
-    raw_response = requests.get(
-        historical_url,
-        headers=headers
-    ).json()
+    df = pd.read_csv(selected_csv)
 
-    st.write("API errors:", raw_response.get("errors"))
-    st.write("API results count:", raw_response.get("results"))
+    st.write(f"Loaded file: {selected_csv}")
+    st.write(f"Rows loaded: {len(df)}")
 
-    matches = raw_response.get("response", [])
+    st.dataframe(df.head())
 
-    st.write(f"Matches returned from API: {len(matches)}")
+    odds_option = st.selectbox(
+        "Choose odds column",
+        ["Auto", "B365>2.5", "Avg>2.5", "Max>2.5"]
+    )
 
-    if len(matches) == 0:
-        st.warning(
-            "The API returned 0 matches. Try Season 2024 or 2025, or your API plan may not include this historical season."
-        )
+    min_odds = st.number_input(
+        "Minimum odds",
+        value=1.60,
+        step=0.05
+    )
 
-    total_bets = 0
-    wins = 0
-    losses = 0
-    total_profit = 0
+    max_odds = st.number_input(
+        "Maximum odds",
+        value=3.00,
+        step=0.05
+    )
 
-    rows = []
+    stake = st.number_input(
+        "Stake per bet",
+        value=1.0,
+        step=0.5
+    )
 
-    for match in matches[:int(max_matches)]:
+    if st.button("Run CSV Backtest"):
 
-        try:
-            home_team = match["teams"]["home"]["name"]
-            away_team = match["teams"]["away"]["name"]
+        total_bets = 0
+        wins = 0
+        losses = 0
+        total_profit = 0
+        rows = []
 
-            home_goals = match["goals"]["home"] or 0
-            away_goals = match["goals"]["away"] or 0
+        for _, row in df.iterrows():
 
-            total_goals = home_goals + away_goals
+            try:
+                home_goals = int(row["FTHG"])
+                away_goals = int(row["FTAG"])
 
-            qualifies = total_goals >= 2
+                total_goals = home_goals + away_goals
 
-            if qualifies:
+                if odds_option != "Auto" and odds_option in df.columns:
+                    odds = float(row[odds_option])
+                elif "B365>2.5" in df.columns:
+                    odds = float(row["B365>2.5"])
+                elif "Avg>2.5" in df.columns:
+                    odds = float(row["Avg>2.5"])
+                elif "Max>2.5" in df.columns:
+                    odds = float(row["Max>2.5"])
+                else:
+                    odds = 1.70
+
+                if pd.isna(odds):
+                    continue
+
+                if odds < min_odds or odds > max_odds:
+                    continue
 
                 total_bets += 1
-                stake = 1
-                odds = 1.70
 
-                if total_goals >= 3:
+                if total_goals > 2.5:
                     profit = stake * (odds - 1)
                     wins += 1
+                    result = "Win"
                 else:
                     profit = -stake
                     losses += 1
+                    result = "Loss"
 
                 total_profit += profit
 
                 rows.append({
-                    "Match": f"{home_team} vs {away_team}",
+                    "Date": row.get("Date", ""),
+                    "Home": row.get("HomeTeam", ""),
+                    "Away": row.get("AwayTeam", ""),
                     "Goals": total_goals,
                     "Odds": odds,
+                    "Result": result,
                     "Profit": round(profit, 2)
                 })
 
-        except:
-            continue
+            except:
+                continue
 
-    if total_bets > 0:
+        if total_bets > 0:
 
-        roi = (total_profit / total_bets) * 100
-        strike_rate = (wins / total_bets) * 100
+            roi = (total_profit / (total_bets * stake)) * 100
+            strike_rate = (wins / total_bets) * 100
 
-        st.subheader("📊 Backtest Results")
+            st.subheader("📊 CSV Backtest Results")
 
-        st.write(f"Total Bets: {total_bets}")
-        st.write(f"Wins: {wins}")
-        st.write(f"Losses: {losses}")
-        st.write(f"Strike Rate: {strike_rate:.1f}%")
-        st.write(f"Profit: {total_profit:.2f} units")
-        st.write(f"ROI: {roi:.2f}%")
+            st.write(f"Total Bets: {total_bets}")
+            st.write(f"Wins: {wins}")
+            st.write(f"Losses: {losses}")
+            st.write(f"Strike Rate: {strike_rate:.1f}%")
+            st.write(f"Profit: {total_profit:.2f} units")
+            st.write(f"ROI: {roi:.2f}%")
 
-        st.dataframe(pd.DataFrame(rows))
+            results_df = pd.DataFrame(rows)
 
-    else:
-        st.warning("No bets found")
+            st.dataframe(results_df)
+
+            st.subheader("📉 Profit Curve")
+
+            results_df["Cumulative Profit"] = results_df["Profit"].cumsum()
+
+            st.line_chart(
+                results_df["Cumulative Profit"]
+            )
+
+        else:
+            st.warning("No bets found in this CSV with the selected filters.")
+
+else:
+    st.warning("No CSV files found in the repo.")
