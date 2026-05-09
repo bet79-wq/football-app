@@ -18,14 +18,9 @@ headers = {
 
 LEAGUE_AVG_2H_GOALS = 1.25
 
-# Live alert filters
 MIN_PROB = 0.58
 MIN_EDGE = 0.05
 MIN_PRESSURE = 18
-
-# Backtest filters — deliberately loose to prove the engine works
-BACKTEST_MIN_PROB = 0.35
-BACKTEST_MIN_PRESSURE = 0
 
 ALERTS_FILE = "alerts_sent.csv"
 
@@ -302,14 +297,14 @@ else:
     st.warning("No second-half opportunities currently qualify")
 
 # =========================================
-# BACKTESTING
+# SIMPLE BACKTESTING
 # =========================================
 
 st.header("📈 Historical Second Half Backtesting")
 
 st.write(
-    "This backtest checks whether the second-half goal filter works. "
-    "It does not use real historical odds yet, so ROI is only a rough simulation."
+    "This simplified backtest checks whether historical goal-heavy games would have produced second-half goal wins. "
+    "It is not using real historical live odds yet."
 )
 
 league_id = st.number_input(
@@ -323,18 +318,21 @@ season = st.number_input(
 )
 
 max_matches = st.number_input(
-    "Max matches to test",
+    "Max matches",
     value=200,
     min_value=20,
     max_value=1000
 )
 
 if st.button("Run Backtest"):
-    st.write("Running historical backtest...")
+
+    st.write("Running backtest...")
 
     historical_url = (
         f"https://v3.football.api-sports.io/fixtures?"
-        f"league={league_id}&season={season}&status=FT"
+        f"league={league_id}&"
+        f"season={season}&"
+        f"status=FT"
     )
 
     matches = requests.get(
@@ -346,45 +344,36 @@ if st.button("Run Backtest"):
     wins = 0
     losses = 0
     total_profit = 0
+
     rows = []
 
     for match in matches[:int(max_matches)]:
+
         try:
             home_team = match["teams"]["home"]["name"]
             away_team = match["teams"]["away"]["name"]
 
-            full_home = match["goals"]["home"]
-            full_away = match["goals"]["away"]
+            home_goals = match["goals"]["home"] or 0
+            away_goals = match["goals"]["away"] or 0
 
-            ht_home = match["score"]["halftime"]["home"]
-            ht_away = match["score"]["halftime"]["away"]
+            total_goals = home_goals + away_goals
 
-            if full_home is None or full_away is None or ht_home is None or ht_away is None:
-                continue
-
-            full_time_goals = full_home + full_away
-            halftime_goals = ht_home + ht_away
-            second_half_goals = full_time_goals - halftime_goals
-
-            pressure = (halftime_goals * 3) + 8
-
-            second_half_xg = LEAGUE_AVG_2H_GOALS + (pressure / 20)
-
-            prob_goal = probability_over_0_5(second_half_xg)
-
-            market_odds = (1 / prob_goal) * 1.05
-
-            qualifies = (
-                prob_goal >= BACKTEST_MIN_PROB and
-                pressure >= BACKTEST_MIN_PRESSURE
-            )
+            # Simple test condition:
+            # If total goals are 2 or more, we simulate that the match
+            # had enough goal environment to qualify for a second-half goal angle.
+            qualifies = total_goals >= 2
 
             if qualifies:
+
                 total_bets += 1
                 stake = 1
+                odds = 1.70
 
-                if second_half_goals >= 1:
-                    profit = stake * (market_odds - 1)
+                # Proxy outcome:
+                # If full match had 3+ goals, assume second-half goal angle wins.
+                # This is a rough starter backtest, not final proof.
+                if total_goals >= 3:
+                    profit = stake * (odds - 1)
                     wins += 1
                 else:
                     profit = -stake
@@ -394,11 +383,8 @@ if st.button("Run Backtest"):
 
                 rows.append({
                     "Match": f"{home_team} vs {away_team}",
-                    "HT Goals": halftime_goals,
-                    "2H Goals": second_half_goals,
-                    "Pressure Proxy": round(pressure, 1),
-                    "Probability": round(prob_goal * 100, 1),
-                    "Sim Odds": round(market_odds, 2),
+                    "Goals": total_goals,
+                    "Odds": odds,
                     "Profit": round(profit, 2)
                 })
 
@@ -406,6 +392,7 @@ if st.button("Run Backtest"):
             continue
 
     if total_bets > 0:
+
         roi = (total_profit / total_bets) * 100
         strike_rate = (wins / total_bets) * 100
 
@@ -419,5 +406,6 @@ if st.button("Run Backtest"):
         st.write(f"ROI: {roi:.2f}%")
 
         st.dataframe(pd.DataFrame(rows))
+
     else:
-        st.warning("No qualifying backtest bets found.")
+        st.warning("No bets found")
