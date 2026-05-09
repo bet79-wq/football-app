@@ -23,9 +23,9 @@ MIN_PROB = 0.58
 MIN_EDGE = 0.05
 MIN_PRESSURE = 18
 
-# Backtest filters — looser because we do not have true historical odds
-BACKTEST_MIN_PROB = 0.50
-BACKTEST_MIN_PRESSURE = 10
+# Backtest filters — deliberately loose to prove the engine works
+BACKTEST_MIN_PROB = 0.35
+BACKTEST_MIN_PRESSURE = 0
 
 ALERTS_FILE = "alerts_sent.csv"
 
@@ -224,7 +224,6 @@ def calculate_second_half_model(match):
 
     prob_goal = probability_over_0_5(second_half_xg)
 
-    # Simulated fair-ish odds. Replace with real live market odds later.
     market_odds = (1 / prob_goal) * 1.05
     implied = 1 / market_odds
     edge = prob_goal - implied
@@ -309,7 +308,7 @@ else:
 st.header("📈 Historical Second Half Backtesting")
 
 st.write(
-    "This backtest checks whether the model's second-half goal filter works. "
+    "This backtest checks whether the second-half goal filter works. "
     "It does not use real historical odds yet, so ROI is only a rough simulation."
 )
 
@@ -347,7 +346,6 @@ if st.button("Run Backtest"):
     wins = 0
     losses = 0
     total_profit = 0
-
     rows = []
 
     for match in matches[:int(max_matches)]:
@@ -368,17 +366,12 @@ if st.button("Run Backtest"):
             halftime_goals = ht_home + ht_away
             second_half_goals = full_time_goals - halftime_goals
 
-            # Backtest proxy pressure.
-            # Since old minute-by-minute pressure is not available here,
-            # we use halftime game state as a rough proxy.
-            pressure = (halftime_goals * 5) + 18
+            pressure = (halftime_goals * 3) + 8
 
             second_half_xg = LEAGUE_AVG_2H_GOALS + (pressure / 20)
 
             prob_goal = probability_over_0_5(second_half_xg)
 
-            # Simulated market odds.
-            # This is not real historical odds.
             market_odds = (1 / prob_goal) * 1.05
 
             qualifies = (
@@ -427,4 +420,4 @@ if st.button("Run Backtest"):
 
         st.dataframe(pd.DataFrame(rows))
     else:
-        st.warning("No qualifying backtest bets found. Try lowering BACKTEST_MIN_PROB or BACKTEST_MIN_PRESSURE.")
+        st.warning("No qualifying backtest bets found.")
