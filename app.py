@@ -1,50 +1,93 @@
 import streamlit as st
 import requests
-import math
 import pandas as pd
+import math
 import os
 
-# 🔐 API KEY
+# =========================================
+# SETTINGS / SECRETS
+# =========================================
+
 API_KEY = os.getenv("API_KEY")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 headers = {
     "x-apisports-key": API_KEY
 }
 
-# 📲 TELEGRAM SETTINGS
-BOT_TOKEN = "8734598526:AAGAygBTOGvxPzEkgMru6hs5RZNxFAN76mc"
-CHAT_ID = "7983580834"
+LEAGUE_AVG_2H_GOALS = 1.25
 
-# 📊 RESULTS FILE
-RESULTS_FILE = "results.csv"
+MIN_PROB = 0.58
+MIN_EDGE = 0.05
+MIN_PRESSURE = 18
 
-if not os.path.exists(RESULTS_FILE):
-    df = pd.DataFrame(columns=[
-        "Match",
-        "Bet",
-        "Odds",
-        "Stake",
-        "Result",
-        "Profit"
-    ])
-    df.to_csv(RESULTS_FILE, index=False)
+ALERTS_FILE = "alerts_sent.csv"
 
-# 📊 POISSON FUNCTIONS
+# =========================================
+# PAGE
+# =========================================
+
+st.set_page_config(
+    page_title="2H Goal Alert System",
+    layout="wide"
+)
+
+st.title("⚽ Automated Second Half Goal Scanner")
+
+st.caption(
+    "Scans live football matches, detects second-half goal value and sends Telegram alerts automatically."
+)
+
+# =========================================
+# AUTO REFRESH
+# =========================================
+
+st.markdown(
+    """
+    <meta http-equiv="refresh" content="120">
+    """,
+    unsafe_allow_html=True
+)
+
+# =========================================
+# ALERT FILE
+# =========================================
+
+if not os.path.exists(ALERTS_FILE):
+
+    pd.DataFrame(columns=[
+        "Fixture ID"
+    ]).to_csv(ALERTS_FILE, index=False)
+
+# =========================================
+# FUNCTIONS
+# =========================================
+
 def poisson_prob(lmbda, k):
-    return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
 
-def over_2_5_probability(lmbda):
-    prob_under = 0
+    return (
+        math.exp(-lmbda) *
+        (lmbda ** k)
+    ) / math.factorial(k)
 
-    for i in range(3):
-        prob_under += poisson_prob(lmbda, i)
+def probability_over_0_5(lmbda):
 
-    return 1 - prob_under
+    return 1 - poisson_prob(lmbda, 0)
 
-# 📲 TELEGRAM ALERTS
+# =========================================
+# TELEGRAM
+# =========================================
+
 def send_telegram_message(message):
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    if not BOT_TOKEN or not CHAT_ID:
+        return
+
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/sendMessage"
+    )
 
     payload = {
         "chat_id": CHAT_ID,
@@ -53,377 +96,558 @@ def send_telegram_message(message):
 
     requests.post(url, data=payload)
 
-# ⚽ APP TITLE
-st.title("⚽ Advanced Football Betting System")
+# =========================================
+# DUPLICATE ALERT PROTECTION
+# =========================================
 
-# 🔥 DAILY PICKS
-st.header("🔥 Automatic Daily Picks")
+def already_alerted(fixture_id):
 
-daily_picks = []
+    alerts = pd.read_csv(ALERTS_FILE)
 
-fixtures_url = "https://v3.football.api-sports.io/fixtures?next=20"
+    existing = alerts[
+        alerts["Fixture ID"] == fixture_id
+    ]
 
-fixtures = requests.get(
-    fixtures_url,
-    headers=headers
-).json().get("response", [])
+    return not existing.empty
 
-LEAGUE_AVG = 2.6
+def save_alert(fixture_id):
 
-# 💰 ODDS FUNCTION
-def get_odds(fixture_id):
+    alerts = pd.read_csv(ALERTS_FILE)
 
-    url = f"https://v3.football.api-sports.io/odds?fixture={fixture_id}"
+    new_row = {
+        "Fixture ID": fixture_id
+    }
 
-    res = requests.get(url, headers=headers).json()
-
-    try:
-        bets = res["response"][0]["bookmakers"][0]["bets"]
-
-        for bet in bets:
-
-            if bet["name"] == "Goals Over/Under":
-
-                for v in bet["values"]:
-
-                    if v["value"] == "Over 2.5":
-                        return float(v["odd"])
-
-    except:
-        return None
-
-# 📊 DAILY SCAN
-for match in fixtures:
-
-    try:
-        fixture_id = match["fixture"]["id"]
-
-        home_team = match["teams"]["home"]["name"]
-        away_team = match["teams"]["away"]["name"]
-
-        home_id = match["teams"]["home"]["id"]
-        away_id = match["teams"]["away"]["id"]
-
-        # TEAM STATS
-        home_stats = requests.get(
-            f"https://v3.football.api-sports.io/teams/statistics?team={home_id}&season=2023",
-            headers=headers
-        ).json()["response"]
-
-        away_stats = requests.get(
-            f"https://v3.football.api-sports.io/teams/statistics?team={away_id}&season=2023",
-            headers=headers
-        ).json()["response"]
-
-        # HOME/AWAY STRENGTHS
-        home_attack = float(
-            home_stats["goals"]["for"]["average"]["home"]
-        ) / (LEAGUE_AVG / 2)
-
-        home_defence = float(
-            home_stats["goals"]["against"]["average"]["home"]
-        ) / (LEAGUE_AVG / 2)
-
-        away_attack = float(
-            away_stats["goals"]["for"]["average"]["away"]
-        ) / (LEAGUE_AVG / 2)
-
-        away_defence = float(
-            away_stats["goals"]["against"]["average"]["away"]
-        ) / (LEAGUE_AVG / 2)
-
-        # EXPECTED GOALS
-        expected_home = (
-            home_attack *
-            away_defence *
-            (LEAGUE_AVG / 2)
-        )
-
-        expected_away = (
-            away_attack *
-            home_defence *
-            (LEAGUE_AVG / 2)
-        )
-
-        total_xg = expected_home + expected_away
-
-        # 📊 OVER 2.5 PROBABILITY
-        prob_over = over_2_5_probability(total_xg)
-
-        # 💰 ODDS
-        odds = get_odds(fixture_id)
-
-        if odds:
-
-            implied = 1 / odds
-            edge = prob_over - implied
-
-            # 🎯 FILTERS
-            if (
-                prob_over >= 0.55 and
-                edge >= 0.05 and
-                total_xg >= 2.2
-            ):
-
-                # 📲 SEND TELEGRAM ALERT
-                message = f"""
-🔥 VALUE BET FOUND
-
-{home_team} vs {away_team}
-
-Over 2.5
-
-Probability: {prob_over*100:.1f}%
-Odds: {odds}
-Edge: {edge*100:.1f}%
-"""
-
-                send_telegram_message(message)
-
-                daily_picks.append({
-                    "Match": f"{home_team} vs {away_team}",
-                    "Probability": f"{prob_over*100:.1f}%",
-                    "Odds": odds,
-                    "Edge": f"{edge*100:.1f}%",
-                    "Decision": "✅ BET"
-                })
-
-    except:
-        continue
-
-# 📊 SHOW PICKS
-if daily_picks:
-
-    st.success(f"{len(daily_picks)} value bets found today")
-
-    picks_df = pd.DataFrame(daily_picks)
-
-    st.dataframe(picks_df)
-
-else:
-    st.warning("No qualifying bets today")
-
-# 📅 MATCH SELECTOR
-match_list = []
-
-for m in fixtures:
-    home = m["teams"]["home"]["name"]
-    away = m["teams"]["away"]["name"]
-
-    match_list.append((
-        f"{home} vs {away}",
-        m["fixture"]["id"]
-    ))
-
-if match_list:
-
-    selected = st.selectbox(
-        "Select Match",
-        match_list
+    alerts = pd.concat(
+        [alerts, pd.DataFrame([new_row])],
+        ignore_index=True
     )
 
-    fixture_id = selected[1]
+    alerts.to_csv(ALERTS_FILE, index=False)
 
-    match_data = next(
-        m for m in fixtures
-        if m["fixture"]["id"] == fixture_id
+# =========================================
+# API FUNCTIONS
+# =========================================
+
+def get_live_fixtures():
+
+    url = (
+        "https://v3.football.api-sports.io/"
+        "fixtures?live=all"
     )
 
-    home_id = match_data["teams"]["home"]["id"]
-    away_id = match_data["teams"]["away"]["id"]
+    try:
 
-    # 📊 TEAM STATS
-    def team_stats(team_id):
+        return requests.get(
+            url,
+            headers=headers
+        ).json().get("response", [])
 
-        url = f"https://v3.football.api-sports.io/teams/statistics?team={team_id}&season=2023"
+    except:
+
+        return []
+
+def get_fixture_stats(fixture_id):
+
+    url = (
+        f"https://v3.football.api-sports.io/"
+        f"fixtures/statistics?"
+        f"fixture={fixture_id}"
+    )
+
+    try:
+
+        return requests.get(
+            url,
+            headers=headers
+        ).json().get("response", [])
+
+    except:
+
+        return []
+
+def get_team_stats(team_id):
+
+    url = (
+        f"https://v3.football.api-sports.io/"
+        f"teams/statistics?"
+        f"team={team_id}&season=2023"
+    )
+
+    try:
 
         return requests.get(
             url,
             headers=headers
         ).json()["response"]
 
+    except:
+
+        return None
+
+def extract_stat(stats, stat_name):
+
     try:
-        home_stats = team_stats(home_id)
-        away_stats = team_stats(away_id)
 
-        home_scored_home = float(
-            home_stats["goals"]["for"]["average"]["home"]
-        )
+        for stat in stats:
 
-        home_conceded_home = float(
-            home_stats["goals"]["against"]["average"]["home"]
-        )
+            if stat["type"] == stat_name:
 
-        away_scored_away = float(
-            away_stats["goals"]["for"]["average"]["away"]
-        )
-
-        away_conceded_away = float(
-            away_stats["goals"]["against"]["average"]["away"]
-        )
-
-        home_attack = home_scored_home / (LEAGUE_AVG / 2)
-        home_defence = home_conceded_home / (LEAGUE_AVG / 2)
-
-        away_attack = away_scored_away / (LEAGUE_AVG / 2)
-        away_defence = away_conceded_away / (LEAGUE_AVG / 2)
-
-        expected_home = (
-            home_attack *
-            away_defence *
-            (LEAGUE_AVG / 2)
-        )
-
-        expected_away = (
-            away_attack *
-            home_defence *
-            (LEAGUE_AVG / 2)
-        )
-
-        total_xg = expected_home + expected_away
-
-        st.subheader("📊 Match Model")
-
-        st.write(f"Home xG: {expected_home:.2f}")
-        st.write(f"Away xG: {expected_away:.2f}")
-        st.write(f"Total xG: {total_xg:.2f}")
-
-        # 📊 PROBABILITIES
-        prob_over = over_2_5_probability(total_xg)
-        prob_under = 1 - prob_over
-
-        st.subheader("📊 Probabilities")
-
-        st.write(f"Over 2.5: {prob_over*100:.1f}%")
-        st.write(f"Under 2.5: {prob_under*100:.1f}%")
-
-        odds = get_odds(fixture_id)
-
-        if odds:
-
-            implied = 1 / odds
-            edge = prob_over - implied
-
-            st.subheader("💰 Market")
-
-            st.write(f"Odds: {odds}")
-            st.write(f"Edge: {edge*100:.1f}%")
-
-            # 🎯 FILTERS
-            min_prob = 0.55
-            min_edge = 0.05
-            min_xg = 2.2
-
-            passes_filters = (
-                prob_over >= min_prob and
-                edge >= min_edge and
-                total_xg >= min_xg
-            )
-
-            # 💰 BANKROLL
-            bankroll = st.number_input(
-                "Bankroll (£)",
-                value=100
-            )
-
-            kelly = (
-                ((prob_over * odds) - 1)
-                / (odds - 1)
-            )
-
-            kelly = max(0, min(kelly, 0.1))
-
-            stake = bankroll * kelly
-
-            st.write(f"Recommended Stake: £{stake:.2f}")
-
-            # 🚨 DECISION
-            if passes_filters:
-                st.success("✅ PLACE BET")
-            else:
-                st.warning("🚫 NO BET")
-
-            # 📝 LOG RESULTS
-            st.subheader("📝 Log Result")
-
-            result = st.selectbox(
-                "Result",
-                ["Pending", "Win", "Loss"]
-            )
-
-            if st.button("Save Bet"):
-
-                profit = 0
-
-                if result == "Win":
-                    profit = stake * (odds - 1)
-
-                elif result == "Loss":
-                    profit = -stake
-
-                df = pd.read_csv(RESULTS_FILE)
-
-                new_row = {
-                    "Match": selected[0],
-                    "Bet": "Over 2.5",
-                    "Odds": odds,
-                    "Stake": stake,
-                    "Result": result,
-                    "Profit": profit
-                }
-
-                df = pd.concat([
-                    df,
-                    pd.DataFrame([new_row])
-                ], ignore_index=True)
-
-                df.to_csv(
-                    RESULTS_FILE,
-                    index=False
-                )
-
-                st.success("Bet Saved!")
-
-        else:
-            st.warning("Odds unavailable")
+                return stat["value"]
 
     except:
-        st.error("Error loading match")
+        pass
 
-# 📊 PERFORMANCE DASHBOARD
-st.subheader("📊 Performance Dashboard")
+    return 0
 
-df = pd.read_csv(RESULTS_FILE)
+# =========================================
+# SECOND HALF MODEL
+# =========================================
 
-if not df.empty:
+def calculate_second_half_model(match):
 
-    total_bets = len(
-        df[df["Result"] != "Pending"]
+    fixture_id = match["fixture"]["id"]
+
+    home_team = match["teams"]["home"]["name"]
+    away_team = match["teams"]["away"]["name"]
+
+    home_id = match["teams"]["home"]["id"]
+    away_id = match["teams"]["away"]["id"]
+
+    elapsed = match["fixture"]["status"]["elapsed"]
+
+    # ONLY SECOND HALF
+    if elapsed is None or elapsed < 46:
+        return None
+
+    home_stats = get_team_stats(home_id)
+    away_stats = get_team_stats(away_id)
+
+    if not home_stats or not away_stats:
+        return None
+
+    # TEAM LATE GOAL STRENGTHS
+
+    try:
+
+        home_2h_scored = float(
+            home_stats["goals"]["for"]["minute"]["76-90"]["percentage"]
+            .replace("%", "")
+        ) / 100
+
+    except:
+
+        home_2h_scored = 0.3
+
+    try:
+
+        away_2h_scored = float(
+            away_stats["goals"]["for"]["minute"]["76-90"]["percentage"]
+            .replace("%", "")
+        ) / 100
+
+    except:
+
+        away_2h_scored = 0.3
+
+    # LIVE STATS
+
+    stats = get_fixture_stats(fixture_id)
+
+    if len(stats) < 2:
+        return None
+
+    home_live = stats[0]["statistics"]
+    away_live = stats[1]["statistics"]
+
+    # SHOTS
+
+    home_shots = extract_stat(
+        home_live,
+        "Total Shots"
     )
 
-    wins = len(
-        df[df["Result"] == "Win"]
+    away_shots = extract_stat(
+        away_live,
+        "Total Shots"
     )
 
-    losses = len(
-        df[df["Result"] == "Loss"]
+    # SHOTS ON TARGET
+
+    home_sot = extract_stat(
+        home_live,
+        "Shots on Goal"
     )
 
-    profit = df["Profit"].sum()
-    staked = df["Stake"].sum()
-
-    roi = (
-        (profit / staked) * 100
-        if staked > 0 else 0
+    away_sot = extract_stat(
+        away_live,
+        "Shots on Goal"
     )
 
-    st.write(f"Total Bets: {total_bets}")
-    st.write(f"Wins: {wins}")
-    st.write(f"Losses: {losses}")
-    st.write(f"Profit: £{profit:.2f}")
-    st.write(f"ROI: {roi:.2f}%")
+    # CORNERS
 
-    st.dataframe(df)
+    home_corners = extract_stat(
+        home_live,
+        "Corner Kicks"
+    )
+
+    away_corners = extract_stat(
+        away_live,
+        "Corner Kicks"
+    )
+
+    # DANGEROUS ATTACKS
+
+    home_attacks = extract_stat(
+        home_live,
+        "Dangerous Attacks"
+    )
+
+    away_attacks = extract_stat(
+        away_live,
+        "Dangerous Attacks"
+    )
+
+    # CURRENT SCORE
+
+    home_goals = match["goals"]["home"]
+    away_goals = match["goals"]["away"]
+
+    total_goals = (
+        home_goals +
+        away_goals
+    )
+
+    # PRESSURE SCORE
+
+    pressure = (
+        (home_shots + away_shots) * 0.4 +
+        (home_sot + away_sot) * 1.3 +
+        (home_corners + away_corners) * 0.5 +
+        (home_attacks + away_attacks) * 0.05
+    )
+
+    # GAME STATE BOOST
+
+    if total_goals == 0:
+        pressure += 4
+
+    elif total_goals == 1:
+        pressure += 2
+
+    # SECOND HALF EXPECTED GOALS
+
+    second_half_xg = (
+        LEAGUE_AVG_2H_GOALS +
+        (pressure / 20) +
+        (home_2h_scored * 0.5) +
+        (away_2h_scored * 0.5)
+    )
+
+    # TIME DECAY
+
+    if elapsed > 75:
+        second_half_xg *= 0.8
+
+    if elapsed > 85:
+        second_half_xg *= 0.6
+
+    # PROBABILITY
+
+    prob_goal = probability_over_0_5(
+        second_half_xg
+    )
+
+    # SIMULATED MARKET ODDS
+
+    market_odds = (
+        1 / prob_goal
+    ) * 1.05
+
+    implied = 1 / market_odds
+
+    edge = prob_goal - implied
+
+    return {
+        "fixture_id": fixture_id,
+        "match": f"{home_team} vs {away_team}",
+        "minute": elapsed,
+        "pressure": pressure,
+        "second_half_xg": second_half_xg,
+        "prob_goal": prob_goal,
+        "market_odds": market_odds,
+        "edge": edge
+    }
+
+# =========================================
+# LIVE SCAN
+# =========================================
+
+st.header("🔥 Live Second Half Goal Opportunities")
+
+live_matches = get_live_fixtures()
+
+live_picks = []
+
+for match in live_matches:
+
+    try:
+
+        model = calculate_second_half_model(match)
+
+        if model is None:
+            continue
+
+        qualifies = (
+            model["prob_goal"] >= MIN_PROB and
+            model["edge"] >= MIN_EDGE and
+            model["pressure"] >= MIN_PRESSURE
+        )
+
+        if qualifies:
+
+            live_picks.append({
+                "Match": model["match"],
+                "Minute": model["minute"],
+                "Pressure": round(model["pressure"], 1),
+                "2H xG": round(model["second_half_xg"], 2),
+                "Goal Probability": f"{model['prob_goal']*100:.1f}%",
+                "Odds": round(model["market_odds"], 2),
+                "Edge": f"{model['edge']*100:.1f}%",
+                "Decision": "✅ BET"
+            })
+
+            # TELEGRAM ALERT
+
+            if not already_alerted(
+                model["fixture_id"]
+            ):
+
+                message = f"""
+🔥 SECOND HALF VALUE BET
+
+{model['match']}
+
+Minute: {model['minute']}
+
+Pressure: {model['pressure']:.1f}
+
+2H xG: {model['second_half_xg']:.2f}
+
+Goal Probability:
+{model['prob_goal']*100:.1f}%
+
+Odds:
+{model['market_odds']:.2f}
+
+Edge:
+{model['edge']*100:.1f}%
+
+✅ OVER 0.5 SECOND HALF GOAL
+"""
+
+                send_telegram_message(
+                    message
+                )
+
+                save_alert(
+                    model["fixture_id"]
+                )
+
+    except:
+        continue
+
+# =========================================
+# DISPLAY PICKS
+# =========================================
+
+if live_picks:
+
+    st.success(
+        f"{len(live_picks)} live bets found"
+    )
+
+    st.dataframe(
+        pd.DataFrame(live_picks)
+    )
 
 else:
-    st.write("No bets logged yet")
+
+    st.warning(
+        "No second-half opportunities currently qualify"
+    )
+
+# =========================================
+# BACKTESTING
+# =========================================
+
+st.header("📈 Historical Second Half Backtesting")
+
+league_id = st.number_input(
+    "League ID",
+    value=39
+)
+
+season = st.number_input(
+    "Season",
+    value=2023
+)
+
+if st.button("Run Backtest"):
+
+    st.write("Running historical backtest...")
+
+    historical_url = (
+        f"https://v3.football.api-sports.io/"
+        f"fixtures?"
+        f"league={league_id}&"
+        f"season={season}&"
+        f"status=FT"
+    )
+
+    matches = requests.get(
+        historical_url,
+        headers=headers
+    ).json().get("response", [])
+
+    total_bets = 0
+    wins = 0
+    losses = 0
+    total_profit = 0
+
+    rows = []
+
+    for match in matches[:200]:
+
+        try:
+
+            home_team = match["teams"]["home"]["name"]
+            away_team = match["teams"]["away"]["name"]
+
+            full_time_goals = (
+                match["goals"]["home"] +
+                match["goals"]["away"]
+            )
+
+            halftime_goals = (
+                match["score"]["halftime"]["home"] +
+                match["score"]["halftime"]["away"]
+            )
+
+            second_half_goals = (
+                full_time_goals -
+                halftime_goals
+            )
+
+            # SIMULATED PRESSURE
+
+            pressure = (
+                halftime_goals * 5
+            ) + 18
+
+            second_half_xg = (
+                LEAGUE_AVG_2H_GOALS +
+                (pressure / 20)
+            )
+
+            prob_goal = probability_over_0_5(
+                second_half_xg
+            )
+
+            market_odds = (
+                1 / prob_goal
+            ) * 1.05
+
+            implied = 1 / market_odds
+
+            edge = prob_goal - implied
+
+            qualifies = (
+                prob_goal >= MIN_PROB and
+                edge >= MIN_EDGE and
+                pressure >= MIN_PRESSURE
+            )
+
+            if qualifies:
+
+                total_bets += 1
+
+                stake = 1
+
+                if second_half_goals >= 1:
+
+                    profit = (
+                        stake *
+                        (market_odds - 1)
+                    )
+
+                    wins += 1
+
+                else:
+
+                    profit = -stake
+
+                    losses += 1
+
+                total_profit += profit
+
+                rows.append({
+                    "Match": f"{home_team} vs {away_team}",
+                    "HT Goals": halftime_goals,
+                    "2H Goals": second_half_goals,
+                    "Pressure": round(pressure, 1),
+                    "Probability": round(prob_goal*100, 1),
+                    "Odds": round(market_odds, 2),
+                    "Profit": round(profit, 2)
+                })
+
+        except:
+            continue
+
+    if total_bets > 0:
+
+        roi = (
+            total_profit /
+            total_bets
+        ) * 100
+
+        strike_rate = (
+            wins /
+            total_bets
+        ) * 100
+
+        st.subheader("📊 Backtest Results")
+
+        st.write(
+            f"Total Bets: {total_bets}"
+        )
+
+        st.write(
+            f"Wins: {wins}"
+        )
+
+        st.write(
+            f"Losses: {losses}"
+        )
+
+        st.write(
+            f"Strike Rate: {strike_rate:.1f}%"
+        )
+
+        st.write(
+            f"Profit: {total_profit:.2f} units"
+        )
+
+        st.write(
+            f"ROI: {roi:.2f}%"
+        )
+
+        st.dataframe(
+            pd.DataFrame(rows)
+        )
+
+    else:
+
+        st.warning(
+            "No qualifying backtest bets found"
+        )
