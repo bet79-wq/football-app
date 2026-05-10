@@ -5,7 +5,7 @@ import math
 import os
 
 # =========================================
-# SETTINGS / SECRETS
+# SETTINGS
 # =========================================
 
 API_KEY = os.getenv("API_KEY")
@@ -23,25 +23,27 @@ headers = {
 MIN_PROB = 0.50
 MIN_EDGE = 0.00
 MIN_PRESSURE = 10
+MIN_MOMENTUM = 3
 
 MIN_MINUTE = 55
 MAX_MINUTE = 85
 
 ALERTS_FILE = "alerts_sent.csv"
+LIVE_STATS_FILE = "live_stats.csv"
 
 # =========================================
 # PAGE
 # =========================================
 
 st.set_page_config(
-    page_title="2H Goal Alert System",
+    page_title="Momentum Goal Scanner",
     layout="wide"
 )
 
-st.title("⚽ Automated Second Half Goal Scanner")
+st.title("⚽ Live Momentum Goal Scanner")
 
 st.caption(
-    "Live second-half goal alerts + CSV historical backtesting."
+    "Second-half momentum betting system with Telegram alerts and CSV backtesting."
 )
 
 # =========================================
@@ -56,7 +58,7 @@ st.markdown(
 )
 
 # =========================================
-# ALERT FILE
+# FILE SETUP
 # =========================================
 
 if not os.path.exists(ALERTS_FILE):
@@ -64,6 +66,17 @@ if not os.path.exists(ALERTS_FILE):
     pd.DataFrame(columns=[
         "Fixture ID"
     ]).to_csv(ALERTS_FILE, index=False)
+
+if not os.path.exists(LIVE_STATS_FILE):
+
+    pd.DataFrame(columns=[
+        "fixture_id",
+        "minute",
+        "shots",
+        "sot",
+        "corners",
+        "attacks"
+    ]).to_csv(LIVE_STATS_FILE, index=False)
 
 # =========================================
 # FUNCTIONS
@@ -206,7 +219,7 @@ def extract_stat(stats, stat_name):
     return 0
 
 # =========================================
-# SECOND HALF MODEL
+# LIVE MODEL
 # =========================================
 
 def calculate_second_half_model(match):
@@ -234,11 +247,19 @@ def calculate_second_half_model(match):
     if elapsed > MAX_MINUTE:
         return None
 
+    # =========================================
+    # TEAM STATS
+    # =========================================
+
     home_stats = get_team_stats(home_id)
     away_stats = get_team_stats(away_id)
 
     if not home_stats or not away_stats:
         return None
+
+    # =========================================
+    # LIVE MATCH STATS
+    # =========================================
 
     stats = get_fixture_stats(fixture_id)
 
@@ -247,10 +268,6 @@ def calculate_second_half_model(match):
 
     home_live = stats[0]["statistics"]
     away_live = stats[1]["statistics"]
-
-    # =========================================
-    # LIVE STATS
-    # =========================================
 
     home_shots = extract_stat(
         home_live,
@@ -292,6 +309,26 @@ def calculate_second_half_model(match):
         "Dangerous Attacks"
     )
 
+    total_shots = (
+        home_shots +
+        away_shots
+    )
+
+    total_sot = (
+        home_sot +
+        away_sot
+    )
+
+    total_corners = (
+        home_corners +
+        away_corners
+    )
+
+    total_attacks = (
+        home_attacks +
+        away_attacks
+    )
+
     # =========================================
     # SCORE STATE
     # =========================================
@@ -304,20 +341,16 @@ def calculate_second_half_model(match):
         away_goals
     )
 
-    # =========================================
-    # ENTRY LOGIC
-    # =========================================
-
-    # Avoid dead matches
-
-    if total_goals >= 5:
-        return None
-
-    # Prefer tighter games
-
     goal_difference = abs(
         home_goals - away_goals
     )
+
+    # =========================================
+    # FILTERS
+    # =========================================
+
+    if total_goals >= 5:
+        return None
 
     if goal_difference >= 3:
         return None
@@ -327,13 +360,11 @@ def calculate_second_half_model(match):
     # =========================================
 
     pressure = (
-        (home_shots + away_shots) * 0.45 +
-        (home_sot + away_sot) * 1.5 +
-        (home_corners + away_corners) * 0.5 +
-        (home_attacks + away_attacks) * 0.05
+        total_shots * 0.45 +
+        total_sot * 1.5 +
+        total_corners * 0.5 +
+        total_attacks * 0.05
     )
-
-    # Game state boosts
 
     if total_goals == 0:
         pressure += 6
@@ -345,7 +376,75 @@ def calculate_second_half_model(match):
         pressure += 2
 
     # =========================================
-    # ATTACK STRENGTH
+    # MOMENTUM ENGINE
+    # =========================================
+
+    live_stats = pd.read_csv(
+        LIVE_STATS_FILE
+    )
+
+    previous = live_stats[
+        live_stats["fixture_id"] == fixture_id
+    ]
+
+    momentum = 0
+
+    if len(previous) > 0:
+
+        last = previous.iloc[-1]
+
+        shots_momentum = (
+            total_shots -
+            last["shots"]
+        )
+
+        sot_momentum = (
+            total_sot -
+            last["sot"]
+        )
+
+        corners_momentum = (
+            total_corners -
+            last["corners"]
+        )
+
+        attacks_momentum = (
+            total_attacks -
+            last["attacks"]
+        )
+
+        momentum = (
+            shots_momentum * 1.0 +
+            sot_momentum * 2.0 +
+            corners_momentum * 1.5 +
+            attacks_momentum * 0.05
+        )
+
+    # =========================================
+    # SAVE CURRENT SNAPSHOT
+    # =========================================
+
+    new_row = {
+        "fixture_id": fixture_id,
+        "minute": elapsed,
+        "shots": total_shots,
+        "sot": total_sot,
+        "corners": total_corners,
+        "attacks": total_attacks
+    }
+
+    live_stats = pd.concat(
+        [live_stats, pd.DataFrame([new_row])],
+        ignore_index=True
+    )
+
+    live_stats.to_csv(
+        LIVE_STATS_FILE,
+        index=False
+    )
+
+    # =========================================
+    # TEAM ATTACK STRENGTH
     # =========================================
 
     try:
@@ -377,6 +476,7 @@ def calculate_second_half_model(match):
     second_half_xg = (
         1.15 +
         (pressure / 20) +
+        (momentum / 10) +
         (home_late_goals * 0.5) +
         (away_late_goals * 0.5)
     )
@@ -397,8 +497,6 @@ def calculate_second_half_model(match):
         second_half_xg
     )
 
-    # Simulated market odds
-
     market_odds = (
         1 / prob_goal
     ) * 1.03
@@ -413,9 +511,10 @@ def calculate_second_half_model(match):
         "minute": elapsed,
         "score": f"{home_goals}-{away_goals}",
         "pressure": pressure,
-        "shots": home_shots + away_shots,
-        "sot": home_sot + away_sot,
-        "corners": home_corners + away_corners,
+        "momentum": momentum,
+        "shots": total_shots,
+        "sot": total_sot,
+        "corners": total_corners,
         "second_half_xg": second_half_xg,
         "prob_goal": prob_goal,
         "market_odds": market_odds,
@@ -426,7 +525,7 @@ def calculate_second_half_model(match):
 # LIVE PICKS
 # =========================================
 
-st.header("🔥 Live Second Half Goal Opportunities")
+st.header("🔥 Live Momentum Opportunities")
 
 live_matches = get_live_fixtures()
 
@@ -441,19 +540,21 @@ for match in live_matches:
         if model is None:
             continue
 
-        # Debug output
+        # DEBUG OUTPUT
 
         st.write(
             f"{model['match']} | "
             f"Min {model['minute']} | "
             f"Pressure {model['pressure']:.1f} | "
+            f"Momentum {model['momentum']:.1f} | "
             f"Prob {model['prob_goal']:.2f}"
         )
 
         qualifies = (
             model["prob_goal"] >= MIN_PROB and
             model["edge"] >= MIN_EDGE and
-            model["pressure"] >= MIN_PRESSURE
+            model["pressure"] >= MIN_PRESSURE and
+            model["momentum"] >= MIN_MOMENTUM
         )
 
         if qualifies:
@@ -463,13 +564,13 @@ for match in live_matches:
                 "Minute": model["minute"],
                 "Score": model["score"],
                 "Pressure": round(model["pressure"], 1),
+                "Momentum": round(model["momentum"], 1),
                 "Shots": model["shots"],
                 "SOT": model["sot"],
                 "Corners": model["corners"],
                 "2H xG": round(model["second_half_xg"], 2),
                 "Goal Probability": f"{model['prob_goal']*100:.1f}%",
                 "Odds": round(model["market_odds"], 2),
-                "Edge": f"{model['edge']*100:.1f}%",
                 "Decision": "✅ BET"
             })
 
@@ -482,16 +583,21 @@ for match in live_matches:
             ):
 
                 message = f"""
-🔥 SECOND HALF VALUE BET
+🔥 LIVE MOMENTUM BET
 
 {model['match']}
 
-Minute: {model['minute']}
+Minute:
+{model['minute']}
 
-Score: {model['score']}
+Score:
+{model['score']}
 
 Pressure:
 {model['pressure']:.1f}
+
+Momentum:
+{model['momentum']:.1f}
 
 Shots:
 {model['shots']}
@@ -510,9 +616,6 @@ Goal Probability:
 
 Odds:
 {model['market_odds']:.2f}
-
-Edge:
-{model['edge']*100:.1f}%
 
 ✅ OVER 0.5 SECOND HALF GOAL
 """
@@ -545,7 +648,7 @@ if live_picks:
 else:
 
     st.warning(
-        "No second-half opportunities currently qualify."
+        "No momentum opportunities currently qualify."
     )
 
 # =========================================
@@ -664,10 +767,6 @@ if csv_files:
                 if odds > max_odds:
                     continue
 
-                # =========================================
-                # SECOND HALF STYLE FILTER
-                # =========================================
-
                 if total_goals < 2:
                     continue
 
@@ -770,7 +869,7 @@ if csv_files:
         else:
 
             st.warning(
-                "No bets found in this CSV with the selected filters."
+                "No bets found in this CSV."
             )
 
 else:
