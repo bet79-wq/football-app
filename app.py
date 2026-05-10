@@ -4,11 +4,21 @@ import pandas as pd
 import math
 import os
 
+# =========================================
+# SETTINGS
+# =========================================
+
 API_KEY = os.getenv("API_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-headers = {"x-apisports-key": API_KEY}
+headers = {
+    "x-apisports-key": API_KEY
+}
+
+# =========================================
+# LIVE FILTERS
+# =========================================
 
 MIN_PROB = 0.45
 MIN_EDGE = 0.00
@@ -21,68 +31,230 @@ MAX_MINUTE = 85
 ALERTS_FILE = "alerts_sent.csv"
 LIVE_STATS_FILE = "live_stats.csv"
 
-st.set_page_config(page_title="Momentum Goal Scanner", layout="wide")
-st.title("⚽ Live Momentum Goal Scanner")
-st.caption("Shows all in-play games, pressure, momentum, and qualifying alerts.")
+# =========================================
+# PAGE
+# =========================================
 
-st.markdown("""<meta http-equiv="refresh" content="120">""", unsafe_allow_html=True)
+st.set_page_config(
+    page_title="Momentum Goal Scanner",
+    layout="wide"
+)
+
+st.title("⚽ Live Momentum Goal Scanner")
+
+st.caption(
+    "Shows all live matches, pressure, momentum, and qualifying alerts."
+)
+
+# =========================================
+# AUTO REFRESH
+# =========================================
+
+st.markdown(
+    """
+    <meta http-equiv="refresh" content="120">
+    """,
+    unsafe_allow_html=True
+)
+
+# =========================================
+# FILE SETUP
+# =========================================
 
 if not os.path.exists(ALERTS_FILE):
-    pd.DataFrame(columns=["Fixture ID"]).to_csv(ALERTS_FILE, index=False)
+
+    pd.DataFrame(columns=[
+        "Fixture ID"
+    ]).to_csv(ALERTS_FILE, index=False)
 
 if not os.path.exists(LIVE_STATS_FILE):
+
     pd.DataFrame(columns=[
-        "fixture_id", "minute", "shots", "sot", "corners", "attacks"
+        "fixture_id",
+        "minute",
+        "shots",
+        "sot",
+        "corners",
+        "attacks"
     ]).to_csv(LIVE_STATS_FILE, index=False)
 
+# =========================================
+# FUNCTIONS
+# =========================================
+
 def poisson_prob(lmbda, k):
-    return (math.exp(-lmbda) * (lmbda ** k)) / math.factorial(k)
+
+    return (
+        math.exp(-lmbda) *
+        (lmbda ** k)
+    ) / math.factorial(k)
 
 def probability_over_0_5(lmbda):
+
     return 1 - poisson_prob(lmbda, 0)
 
+# =========================================
+# TELEGRAM
+# =========================================
+
 def send_telegram_message(message):
+
     if not BOT_TOKEN or not CHAT_ID:
         return
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message}
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/sendMessage"
+    )
+
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message
+    }
+
     requests.post(url, data=payload)
 
+# =========================================
+# ALERT TRACKING
+# =========================================
+
 def already_alerted(fixture_id):
+
     alerts = pd.read_csv(ALERTS_FILE)
-    return not alerts[alerts["Fixture ID"] == fixture_id].empty
+
+    existing = alerts[
+        alerts["Fixture ID"] == fixture_id
+    ]
+
+    return not existing.empty
 
 def save_alert(fixture_id):
+
     alerts = pd.read_csv(ALERTS_FILE)
-    new_row = {"Fixture ID": fixture_id}
-    alerts = pd.concat([alerts, pd.DataFrame([new_row])], ignore_index=True)
+
+    new_row = {
+        "Fixture ID": fixture_id
+    }
+
+    alerts = pd.concat(
+        [alerts, pd.DataFrame([new_row])],
+        ignore_index=True
+    )
+
     alerts.to_csv(ALERTS_FILE, index=False)
 
+# =========================================
+# API FUNCTIONS
+# =========================================
+
 def get_live_fixtures():
-    url = "https://v3.football.api-sports.io/fixtures?live=all"
+
+    url = (
+        "https://v3.football.api-sports.io/"
+        "fixtures?live=all"
+    )
+
     try:
-        return requests.get(url, headers=headers).json().get("response", [])
+
+        response = requests.get(
+            url,
+            headers=headers
+        ).json()
+
+        return response.get("response", [])
+
     except:
+
         return []
 
 def get_fixture_stats(fixture_id):
-    url = f"https://v3.football.api-sports.io/fixtures/statistics?fixture={fixture_id}"
+
+    url = (
+        f"https://v3.football.api-sports.io/"
+        f"fixtures/statistics?"
+        f"fixture={fixture_id}"
+    )
+
     try:
-        return requests.get(url, headers=headers).json().get("response", [])
+
+        response = requests.get(
+            url,
+            headers=headers
+        ).json()
+
+        return response.get("response", [])
+
     except:
+
         return []
 
 def extract_stat(stats, stat_name):
+
     try:
+
         for stat in stats:
+
             if stat["type"] == stat_name:
+
                 return stat["value"] or 0
+
     except:
         pass
+
     return 0
 
+# =========================================
+# DEBUG SECTION
+# =========================================
+
+st.header("🔍 API DEBUG")
+
+live_matches = get_live_fixtures()
+
+st.write(
+    f"Live matches found by API: {len(live_matches)}"
+)
+
+for match in live_matches:
+
+    try:
+
+        fixture_id = match["fixture"]["id"]
+
+        home = match["teams"]["home"]["name"]
+        away = match["teams"]["away"]["name"]
+
+        status = match["fixture"]["status"]["long"]
+
+        elapsed = match["fixture"]["status"]["elapsed"]
+
+        st.write(
+            f"{home} vs {away} | "
+            f"Status: {status} | "
+            f"Minute: {elapsed}"
+        )
+
+        stats = get_fixture_stats(
+            fixture_id
+        )
+
+        st.write(
+            f"Stats rows returned: {len(stats)}"
+        )
+
+        if len(stats) > 0:
+
+            st.write(stats)
+
+    except:
+        continue
+
+# =========================================
+# GAME STATE MODEL
+# =========================================
+
 def calculate_game_state(match):
+
     fixture_id = match["fixture"]["id"]
 
     home_team = match["teams"]["home"]["name"]
@@ -101,28 +273,89 @@ def calculate_game_state(match):
     home_live = stats[0]["statistics"]
     away_live = stats[1]["statistics"]
 
-    home_shots = extract_stat(home_live, "Total Shots")
-    away_shots = extract_stat(away_live, "Total Shots")
+    # =========================================
+    # LIVE STATS
+    # =========================================
 
-    home_sot = extract_stat(home_live, "Shots on Goal")
-    away_sot = extract_stat(away_live, "Shots on Goal")
+    home_shots = extract_stat(
+        home_live,
+        "Total Shots"
+    )
 
-    home_corners = extract_stat(home_live, "Corner Kicks")
-    away_corners = extract_stat(away_live, "Corner Kicks")
+    away_shots = extract_stat(
+        away_live,
+        "Total Shots"
+    )
 
-    home_attacks = extract_stat(home_live, "Dangerous Attacks")
-    away_attacks = extract_stat(away_live, "Dangerous Attacks")
+    home_sot = extract_stat(
+        home_live,
+        "Shots on Goal"
+    )
 
-    total_shots = home_shots + away_shots
-    total_sot = home_sot + away_sot
-    total_corners = home_corners + away_corners
-    total_attacks = home_attacks + away_attacks
+    away_sot = extract_stat(
+        away_live,
+        "Shots on Goal"
+    )
+
+    home_corners = extract_stat(
+        home_live,
+        "Corner Kicks"
+    )
+
+    away_corners = extract_stat(
+        away_live,
+        "Corner Kicks"
+    )
+
+    home_attacks = extract_stat(
+        home_live,
+        "Dangerous Attacks"
+    )
+
+    away_attacks = extract_stat(
+        away_live,
+        "Dangerous Attacks"
+    )
+
+    total_shots = (
+        home_shots +
+        away_shots
+    )
+
+    total_sot = (
+        home_sot +
+        away_sot
+    )
+
+    total_corners = (
+        home_corners +
+        away_corners
+    )
+
+    total_attacks = (
+        home_attacks +
+        away_attacks
+    )
+
+    # =========================================
+    # SCORE STATE
+    # =========================================
 
     home_goals = match["goals"]["home"] or 0
     away_goals = match["goals"]["away"] or 0
 
-    total_goals = home_goals + away_goals
-    goal_difference = abs(home_goals - away_goals)
+    total_goals = (
+        home_goals +
+        away_goals
+    )
+
+    goal_difference = abs(
+        home_goals - away_goals
+    )
+
+    # =========================================
+    # PRESSURE MODEL
+    # =========================================
 
     pressure = (
         total_shots * 0.45 +
@@ -133,24 +366,50 @@ def calculate_game_state(match):
 
     if total_goals == 0:
         pressure += 6
+
     elif total_goals == 1:
         pressure += 4
+
     elif total_goals == 2:
         pressure += 2
 
-    live_stats = pd.read_csv(LIVE_STATS_FILE)
+    # =========================================
+    # MOMENTUM ENGINE
+    # =========================================
 
-    previous = live_stats[live_stats["fixture_id"] == fixture_id]
+    live_stats = pd.read_csv(
+        LIVE_STATS_FILE
+    )
+
+    previous = live_stats[
+        live_stats["fixture_id"] == fixture_id
+    ]
 
     momentum = 0
 
     if len(previous) > 0:
+
         last = previous.iloc[-1]
 
-        shots_momentum = total_shots - last["shots"]
-        sot_momentum = total_sot - last["sot"]
-        corners_momentum = total_corners - last["corners"]
-        attacks_momentum = total_attacks - last["attacks"]
+        shots_momentum = (
+            total_shots -
+            last["shots"]
+        )
+
+        sot_momentum = (
+            total_sot -
+            last["sot"]
+        )
+
+        corners_momentum = (
+            total_corners -
+            last["corners"]
+        )
+
+        attacks_momentum = (
+            total_attacks -
+            last["attacks"]
+        )
 
         momentum = (
             shots_momentum * 1.0 +
@@ -158,6 +417,10 @@ def calculate_game_state(match):
             corners_momentum * 1.5 +
             attacks_momentum * 0.05
         )
+
+    # =========================================
+    # SAVE CURRENT SNAPSHOT
+    # =========================================
 
     new_row = {
         "fixture_id": fixture_id,
@@ -168,10 +431,25 @@ def calculate_game_state(match):
         "attacks": total_attacks
     }
 
-    live_stats = pd.concat([live_stats, pd.DataFrame([new_row])], ignore_index=True)
-    live_stats.to_csv(LIVE_STATS_FILE, index=False)
+    live_stats = pd.concat(
+        [live_stats, pd.DataFrame([new_row])],
+        ignore_index=True
+    )
 
-    second_half_xg = 1.15 + (pressure / 20) + (momentum / 10)
+    live_stats.to_csv(
+        LIVE_STATS_FILE,
+        index=False
+    )
+
+    # =========================================
+    # XG MODEL
+    # =========================================
+
+    second_half_xg = (
+        1.15 +
+        (pressure / 20) +
+        (momentum / 10)
+    )
 
     if elapsed > 75:
         second_half_xg *= 0.85
@@ -179,13 +457,25 @@ def calculate_game_state(match):
     if elapsed > 82:
         second_half_xg *= 0.70
 
-    prob_goal = probability_over_0_5(second_half_xg)
+    prob_goal = probability_over_0_5(
+        second_half_xg
+    )
 
-    market_odds = (1 / prob_goal) * 1.03
+    market_odds = (
+        1 / prob_goal
+    ) * 1.03
+
     implied = 1 / market_odds
+
     edge = prob_goal - implied
 
-    in_entry_window = MIN_MINUTE <= elapsed <= MAX_MINUTE
+    # =========================================
+    # ENTRY CONDITIONS
+    # =========================================
+
+    in_entry_window = (
+        MIN_MINUTE <= elapsed <= MAX_MINUTE
+    )
 
     game_state_ok = (
         total_goals < 5 and
@@ -202,16 +492,27 @@ def calculate_game_state(match):
     )
 
     if not in_entry_window:
+
         reason = "Outside minute window"
+
     elif not game_state_ok:
+
         reason = "Bad score state"
+
     elif pressure < MIN_PRESSURE:
+
         reason = "Pressure too low"
+
     elif momentum < MIN_MOMENTUM:
+
         reason = "Momentum too low"
+
     elif prob_goal < MIN_PROB:
+
         reason = "Probability too low"
+
     else:
+
         reason = "Qualifies"
 
     return {
@@ -233,15 +534,19 @@ def calculate_game_state(match):
         "reason": reason
     }
 
-st.header("👀 Live In-Play Watchlist")
+# =========================================
+# LIVE WATCHLIST
+# =========================================
 
-live_matches = get_live_fixtures()
+st.header("👀 LIVE IN-PLAY WATCHLIST")
 
 watchlist = []
 alerts = []
 
 for match in live_matches:
+
     try:
+
         model = calculate_game_state(match)
 
         if model is None:
@@ -263,37 +568,68 @@ for match in live_matches:
         })
 
         if model["qualifies"]:
+
             alerts.append(model)
 
-            if not already_alerted(model["fixture_id"]):
+            if not already_alerted(
+                model["fixture_id"]
+            ):
+
                 message = f"""
 🔥 LIVE MOMENTUM BET
 
 {model['match']}
 
-Minute: {model['minute']}
-Score: {model['score']}
+Minute:
+{model['minute']}
 
-Pressure: {model['pressure']:.1f}
-Momentum: {model['momentum']:.1f}
+Score:
+{model['score']}
 
-Shots: {model['shots']}
-SOT: {model['sot']}
-Corners: {model['corners']}
+Pressure:
+{model['pressure']:.1f}
 
-2H xG: {model['second_half_xg']:.2f}
-Goal Probability: {model['prob_goal']*100:.1f}%
+Momentum:
+{model['momentum']:.1f}
+
+Shots:
+{model['shots']}
+
+Shots On Target:
+{model['sot']}
+
+Corners:
+{model['corners']}
+
+2H xG:
+{model['second_half_xg']:.2f}
+
+Goal Probability:
+{model['prob_goal']*100:.1f}%
 
 ✅ OVER 0.5 SECOND HALF GOAL
 """
-                send_telegram_message(message)
-                save_alert(model["fixture_id"])
+
+                send_telegram_message(
+                    message
+                )
+
+                save_alert(
+                    model["fixture_id"]
+                )
 
     except:
         continue
 
+# =========================================
+# DISPLAY WATCHLIST
+# =========================================
+
 if watchlist:
-    watchlist_df = pd.DataFrame(watchlist)
+
+    watchlist_df = pd.DataFrame(
+        watchlist
+    )
 
     st.dataframe(
         watchlist_df.sort_values(
@@ -302,15 +638,25 @@ if watchlist:
         ),
         use_container_width=True
     )
-else:
-    st.warning("No live games with available stats right now.")
 
-st.header("🔥 Qualifying Alerts")
+else:
+
+    st.warning(
+        "No live games with available stats right now."
+    )
+
+# =========================================
+# DISPLAY ALERTS
+# =========================================
+
+st.header("🔥 QUALIFYING ALERTS")
 
 if alerts:
+
     alert_rows = []
 
     for model in alerts:
+
         alert_rows.append({
             "Match": model["match"],
             "Minute": model["minute"],
@@ -321,7 +667,17 @@ if alerts:
             "Decision": "✅ BET"
         })
 
-    st.success(f"{len(alert_rows)} qualifying opportunities found")
-    st.dataframe(pd.DataFrame(alert_rows), use_container_width=True)
+    st.success(
+        f"{len(alert_rows)} qualifying opportunities found"
+    )
+
+    st.dataframe(
+        pd.DataFrame(alert_rows),
+        use_container_width=True
+    )
+
 else:
-    st.warning("No games currently qualify, but watchlist above shows what is close.")
+
+    st.warning(
+        "No games currently qualify."
+    )
