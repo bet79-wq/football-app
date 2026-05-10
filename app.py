@@ -16,6 +16,22 @@ headers = {
     "x-apisports-key": API_KEY
 }
 
+# =========================================
+# LEAGUE FILTERS
+# =========================================
+
+ALLOWED_LEAGUES = {
+    88: "Eredivisie",
+    103: "Eliteserien",
+    113: "Allsvenskan",
+    207: "Swiss Super League",
+    218: "Austrian Bundesliga"
+}
+
+# =========================================
+# LIVE FILTERS
+# =========================================
+
 MIN_PROB = 0.45
 MIN_EDGE = 0.00
 MIN_PRESSURE = 8
@@ -23,6 +39,8 @@ MIN_MOMENTUM = 1
 
 MIN_MINUTE = 55
 MAX_MINUTE = 85
+
+MAX_MATCHES_TO_SCAN = 5
 
 ALERTS_FILE = "alerts_sent.csv"
 LIVE_STATS_FILE = "live_stats.csv"
@@ -37,11 +55,15 @@ st.set_page_config(
 )
 
 st.title("⚽ Live Momentum Goal Scanner")
-st.caption("Debug version: shows API response, live fixtures, stats, pressure, and alerts.")
 
+st.caption(
+    "Only scanning Eredivisie, Eliteserien, Allsvenskan, Swiss Super League and Austrian Bundesliga."
+)
+
+# Refresh every 5 minutes to save API requests
 st.markdown(
     """
-    <meta http-equiv="refresh" content="120">
+    <meta http-equiv="refresh" content="300">
     """,
     unsafe_allow_html=True
 )
@@ -62,27 +84,6 @@ if not os.path.exists(LIVE_STATS_FILE):
         "corners",
         "attacks"
     ]).to_csv(LIVE_STATS_FILE, index=False)
-
-# =========================================
-# BASIC CHECKS
-# =========================================
-
-st.header("🔐 Secrets Check")
-
-if API_KEY:
-    st.success("API_KEY found in Streamlit Secrets")
-else:
-    st.error("API_KEY missing from Streamlit Secrets")
-
-if BOT_TOKEN:
-    st.success("BOT_TOKEN found")
-else:
-    st.warning("BOT_TOKEN missing")
-
-if CHAT_ID:
-    st.success("CHAT_ID found")
-else:
-    st.warning("CHAT_ID missing")
 
 # =========================================
 # FUNCTIONS
@@ -126,24 +127,19 @@ def save_alert(fixture_id):
 
     alerts.to_csv(ALERTS_FILE, index=False)
 
-def get_live_fixtures_debug():
+def get_live_fixtures():
     url = "https://v3.football.api-sports.io/fixtures?live=all"
 
     try:
         response = requests.get(url, headers=headers)
         data = response.json()
 
-        return {
-            "status_code": response.status_code,
-            "raw": data,
-            "fixtures": data.get("response", [])
-        }
+        return data
 
     except Exception as e:
         return {
-            "status_code": "ERROR",
-            "raw": str(e),
-            "fixtures": []
+            "errors": str(e),
+            "response": []
         }
 
 def get_fixture_stats(fixture_id):
@@ -153,10 +149,10 @@ def get_fixture_stats(fixture_id):
         response = requests.get(url, headers=headers)
         data = response.json()
 
-        return data.get("response", []), data
+        return data.get("response", [])
 
-    except Exception as e:
-        return [], {"error": str(e)}
+    except:
+        return []
 
 def extract_stat(stats, stat_name):
     try:
@@ -174,16 +170,28 @@ def extract_stat(stats, stat_name):
 
 st.header("🔍 API Debug")
 
-debug = get_live_fixtures_debug()
+api_data = get_live_fixtures()
 
-st.write("Status code:", debug["status_code"])
+st.write("API errors:", api_data.get("errors"))
+st.write("API results:", api_data.get("results"))
 
-st.subheader("Full API response")
-st.json(debug["raw"])
+all_live_matches = api_data.get("response", [])
 
-live_matches = debug["fixtures"]
+st.write(f"Total live matches found by API: {len(all_live_matches)}")
 
-st.write(f"Live matches found by API: {len(live_matches)}")
+# Filter only selected leagues
+live_matches = []
+
+for match in all_live_matches:
+    league_id = match["league"]["id"]
+
+    if league_id in ALLOWED_LEAGUES:
+        live_matches.append(match)
+
+st.write(f"Live matches in selected leagues: {len(live_matches)}")
+
+# Limit matches to protect API allowance
+live_matches = live_matches[:MAX_MATCHES_TO_SCAN]
 
 # =========================================
 # GAME STATE MODEL
@@ -195,22 +203,25 @@ def calculate_game_state(match):
     home_team = match["teams"]["home"]["name"]
     away_team = match["teams"]["away"]["name"]
 
+    league_id = match["league"]["id"]
+    league_name = ALLOWED_LEAGUES.get(league_id, match["league"]["name"])
+
     elapsed = match["fixture"]["status"]["elapsed"]
 
     if elapsed is None:
         elapsed = 0
 
-    stats, raw_stats_response = get_fixture_stats(fixture_id)
+    stats = get_fixture_stats(fixture_id)
 
     if len(stats) < 2:
         return {
             "fixture_id": fixture_id,
             "match": f"{home_team} vs {away_team}",
+            "league": league_name,
             "minute": elapsed,
             "score": f"{match['goals']['home'] or 0}-{match['goals']['away'] or 0}",
             "has_stats": False,
-            "raw_stats_response": raw_stats_response,
-            "reason": "Stats rows less than 2"
+            "reason": "Stats unavailable"
         }
 
     home_live = stats[0]["statistics"]
@@ -342,6 +353,7 @@ def calculate_game_state(match):
     return {
         "fixture_id": fixture_id,
         "match": f"{home_team} vs {away_team}",
+        "league": league_name,
         "minute": elapsed,
         "score": f"{home_goals}-{away_goals}",
         "has_stats": True,
@@ -373,11 +385,9 @@ for match in live_matches:
     try:
         model = calculate_game_state(match)
 
-        if model is None:
-            continue
-
         if not model.get("has_stats", False):
             missing_stats.append({
+                "League": model["league"],
                 "Match": model["match"],
                 "Minute": model["minute"],
                 "Score": model["score"],
@@ -386,6 +396,7 @@ for match in live_matches:
             continue
 
         watchlist.append({
+            "League": model["league"],
             "Match": model["match"],
             "Minute": model["minute"],
             "Score": model["score"],
@@ -407,6 +418,7 @@ for match in live_matches:
                 message = f"""
 🔥 LIVE MOMENTUM BET
 
+{model['league']}
 {model['match']}
 
 Minute: {model['minute']}
@@ -427,13 +439,8 @@ Goal Probability: {model['prob_goal']*100:.1f}%
                 send_telegram_message(message)
                 save_alert(model["fixture_id"])
 
-    except Exception as e:
-        missing_stats.append({
-            "Match": "Unknown",
-            "Minute": "",
-            "Score": "",
-            "Reason": str(e)
-        })
+    except:
+        continue
 
 if watchlist:
     watchlist_df = pd.DataFrame(watchlist)
@@ -446,10 +453,10 @@ if watchlist:
         use_container_width=True
     )
 else:
-    st.warning("No live games with usable stats right now.")
+    st.warning("No live games with usable stats in selected leagues right now.")
 
 if missing_stats:
-    st.subheader("⚠️ Live games found, but stats unavailable")
+    st.subheader("⚠️ Selected league games found, but stats unavailable")
     st.dataframe(pd.DataFrame(missing_stats), use_container_width=True)
 
 # =========================================
@@ -463,6 +470,7 @@ if alerts:
 
     for model in alerts:
         alert_rows.append({
+            "League": model["league"],
             "Match": model["match"],
             "Minute": model["minute"],
             "Score": model["score"],
